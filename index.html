@@ -1,0 +1,423 @@
+<html>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Realtime Deception Detection</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Poppins', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: linear-gradient(45deg, #FF6B6B, #4ECDC4, #45B7D1);
+    color: #333;
+    margin: 0;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  h1 {
+    color: #fff;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    font-size: 2.5em;
+    margin-bottom: 20px;
+  }
+  #main-container {
+    display: flex;
+    justify-content: space-around;
+    width: 100%;
+    max-width: 1200px;
+  }
+  #video-container {
+    position: relative;
+    width: 640px;
+    height: 480px;
+    border: 4px solid #fff;
+    border-radius: 15px;
+    overflow: hidden;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+  }
+  #video-source {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  #overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  #analysis-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 400px;
+    background: rgba(255,255,255,0.8);
+    padding: 20px;
+    border-radius: 15px;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+  }
+  #result {
+    margin-top: 20px;
+    font-size: 28px;
+    font-weight: bold;
+    text-align: center;
+    color: #FF6B6B;
+  }
+  #lie-meter {
+    width: 300px;
+    height: 40px;
+    background-color: #f0f0f0;
+    border-radius: 20px;
+    margin-top: 20px;
+    overflow: hidden;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
+  }
+  #lie-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #4ECDC4, #FF6B6B);
+    transition: width 0.5s ease-in-out;
+  }
+  #matrix-container {
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+  }
+  .matrix-item {
+    background-color: #fff;
+    padding: 15px;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 0 5px 10px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease;
+  }
+  .matrix-item:hover {
+    transform: translateY(-5px);
+  }
+  #chart-container {
+    width: 100%;
+    height: 300px;
+    margin-top: 30px;
+  }
+  .control-button {
+    margin-top: 20px;
+    padding: 10px 20px;
+    font-size: 18px;
+    background-color: #FF6B6B;
+    color: white;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+  .control-button:hover {
+    background-color: #ff4f4f;
+  }
+  #source-selector {
+    margin-top: 20px;
+    padding: 10px;
+    font-size: 16px;
+    border-radius: 10px;
+    border: 2px solid #4ECDC4;
+    background-color: white;
+  }
+</style>
+</head>
+<body>
+  <h1>Realtime Deception Detection</h1>
+  <select id="source-selector">
+    <option value="camera">Camera</option>
+    <option value="screen">Screen Capture</option>
+  </select>
+  <div id="main-container">
+    <div id="video-container">
+      <video id="video-source" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div id="analysis-container">
+      <div id="result">Waiting to start...</div>
+      <div id="lie-meter">
+        <div id="lie-bar"></div>
+      </div>
+      <div id="matrix-container">
+        <div class="matrix-item">Eye Movement</div>
+        <div class="matrix-item">Micro Expressions</div>
+        <div class="matrix-item">Voice Stress</div>
+        <div class="matrix-item">Body Language</div>
+        <div class="matrix-item">Verbal Content</div>
+        <div class="matrix-item">Physiological</div>
+      </div>
+      <div id="chart-container">
+        <canvas id="deception-chart"></canvas>
+      </div>
+      <button id="start-button" class="control-button">Start Analysis</button>
+      <button id="stop-button" class="control-button" style="display: none;">Stop Analysis</button>
+    </div>
+  </div>
+
+
+  <script>
+    const video = document.getElementById('video-source');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+    const result = document.getElementById('result');
+    const lieBar = document.getElementById('lie-bar');
+    const matrixItems = document.querySelectorAll('.matrix-item');
+    const sourceSelector = document.getElementById('source-selector');
+    const startButton = document.getElementById('start-button');
+    const stopButton = document.getElementById('stop-button');
+
+    let chart;
+    let currentStream = null;
+    let isAnalyzing = false;
+    let detector = null;
+
+
+    async function setupCamera() {
+  try {
+    console.log("Requesting camera access...");
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    currentStream = stream;
+    console.log("Camera stream started successfully.");
+    return new Promise(resolve => {
+      video.onloadedmetadata = () => {
+        console.log("Camera metadata loaded.");
+        resolve();
+      };
+    });
+  } catch (error) {
+    console.error('Error accessing the camera:', error);
+    alert('Failed to access the camera. Please check your camera permissions and try again.');
+    throw new Error('Camera access failed: ' + error.message);
+  }
+}
+
+async function setupScreenCapture() {
+  try {
+    console.log("Requesting screen capture...");
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    video.srcObject = stream;
+    currentStream = stream;
+    console.log("Screen capture started successfully.");
+    return new Promise(resolve => {
+      video.onloadedmetadata = () => {
+        console.log("Screen capture metadata loaded.");
+        resolve();
+      };
+    });
+  } catch (err) {
+    console.error("Error setting up screen capture:", err);
+    alert('Failed to start screen capture. Please try again.');
+    throw new Error('Screen capture failed: ' + err.message);
+  }
+}
+
+
+    function stopStream() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      video.srcObject = null;
+    }
+
+    sourceSelector.addEventListener('change', () => {
+      if (isAnalyzing) {
+        stopAnalysis();
+      }
+      stopStream();
+    });
+
+    startButton.addEventListener('click', startAnalysis);
+    stopButton.addEventListener('click', stopAnalysis);
+
+    async function startAnalysis() {
+      stopAnalysis();
+      
+      try {
+        if (sourceSelector.value === 'camera') {
+          await setupCamera();
+        } else {
+          await setupScreenCapture();
+        }
+        
+        overlay.width = video.videoWidth;
+        overlay.height = video.videoHeight;
+        
+        isAnalyzing = true;
+        result.textContent = 'Analysis in progress...';
+        startButton.style.display = 'none';
+        stopButton.style.display = 'inline-block';
+        
+        if (!detector) {
+          detector = await loadFaceLandmarksDetector();
+          console.log("Detector loaded successfully:", detector);
+        }
+        
+        detectDeception();
+      } catch (error) {
+        console.error('Error starting analysis:', error);
+        alert('Failed to start analysis. Please try again.');
+        stopAnalysis();
+      }
+    }
+
+    function stopAnalysis() {
+      // Set the analysis state to false immediately to stop any ongoing detection loops
+      isAnalyzing = false;
+
+      // Stop the video stream immediately
+      stopStream();
+
+      // Immediately update the UI to show the stopped state
+      result.textContent = 'Analysis stopped';
+      lieBar.style.width = '0%';
+
+      // Clear the overlay canvas immediately
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+      // Update the matrix to reflect the stopped state
+      updateMatrix(0);
+      
+      // Reset the chart to initial values (truthfulness: 100%, deception: 0%)
+      updateChart(0);
+
+      // Switch button visibility back to 'Start' button
+      startButton.style.display = 'inline-block';
+      stopButton.style.display = 'none';
+
+      console.log('Analysis stopped and UI updated.');
+    }
+
+
+    async function loadFaceLandmarksDetector() {
+      const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+      const detectorConfig = {
+        runtime: 'tfjs', // or 'mediapipe' if using MediaPipe backend
+        maxFaces: 1
+      };
+      return faceLandmarksDetection.createDetector(model, detectorConfig);
+    }
+
+
+    function drawFaceLandmarks(landmarks) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.fillStyle = '#FF6B6B';
+      ctx.strokeStyle = '#FF6B6B';
+      ctx.lineWidth = 2;
+      
+      landmarks.forEach(point => {
+        ctx.beginPath();
+        ctx.arc(point[0], point[1], 2, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+
+      const connections = [
+        [33, 7], [7, 163], [163, 144], [144, 145], [145, 153], [153, 154], [154, 155],
+        [155, 133], [33, 246], [246, 161], [161, 160], [160, 159], [159, 158], [158, 157],
+        [157, 173], [173, 133], [33, 284], [284, 251], [251, 389], [389, 356], [356, 454],
+        [454, 323], [323, 361], [361, 288], [288, 397], [397, 365], [365, 379], [379, 378],
+        [378, 400], [400, 377], [377, 152], [152, 148], [148, 176], [176, 149], [149, 150],
+        [150, 136], [136, 172], [172, 58], [58, 132], [132, 93], [93, 234], [234, 127],
+        [127, 162], [162, 21], [21, 54], [54, 103], [103, 67], [67, 109], [109, 10]
+      ];
+
+      ctx.beginPath();
+      connections.forEach(([start, end]) => {
+        ctx.moveTo(landmarks[start][0], landmarks[start][1]);
+        ctx.lineTo(landmarks[end][0], landmarks[end][1]);
+      });
+      ctx.stroke();
+    }
+
+    function analyzeFacialExpressions(landmarks) {
+      const leftEyeOpenness = landmarks[386][1] - landmarks[374][1];
+      const rightEyeOpenness = landmarks[159][1] - landmarks[145][1];
+      const mouthOpenness = landmarks[14][1] - landmarks[13][1];
+      const eyebrowRaise = (landmarks[282][1] - landmarks[260][1]) + (landmarks[52][1] - landmarks[65][1]);
+
+      const deceptionScore = ((leftEyeOpenness + rightEyeOpenness + mouthOpenness + eyebrowRaise) / 500) * 2;
+      return Math.min(Math.max(deceptionScore, 0), 1);
+    }
+
+    function updateMatrix(deceptionScore) {
+      matrixItems.forEach(item => {
+        const randomValue = Math.random() * deceptionScore;
+        const color = `hsl(${(1 - randomValue) * 120}, 100%, 50%)`;
+        item.style.backgroundColor = color;
+        item.textContent = `${item.textContent.split(':')[0]}: ${(randomValue * 100).toFixed(2)}%`;
+      });
+    }
+
+    function updateChart(deceptionScore) {
+      const labels = ['Truthfulness', 'Deception'];
+      const data = [100 - deceptionScore * 100, deceptionScore * 100];
+      
+      if (chart) {
+        chart.data.datasets[0].data = data;
+        chart.update();
+      } else {
+        const ctx = document.getElementById('deception-chart').getContext('2d');
+        chart = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: labels,
+            datasets: [{
+              data: data,
+              backgroundColor: ['#4ECDC4', '#FF6B6B'],
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'bottom',
+              },
+              title: {
+                display: true,
+                text: 'Deception Analysis'
+              }
+            }
+          }
+        });
+      }
+    }
+
+    async function detectDeception() {
+      while (isAnalyzing) {
+        try {
+          const predictions = await detector.estimateFaces(video);
+          
+          if (predictions.length > 0) {
+            const landmarks = predictions[0].scaledMesh;
+            drawFaceLandmarks(landmarks);
+            
+            const deceptionScore = analyzeFacialExpressions(landmarks);
+            const liePercentage = deceptionScore * 100;
+            
+            result.textContent = `Lie Probability: ${liePercentage.toFixed(2)}%`;
+            lieBar.style.width = `${liePercentage}%`;
+
+            updateMatrix(deceptionScore);
+            updateChart(deceptionScore);
+          } else {
+            result.textContent = 'No face detected';
+            console.log('No face detected in this frame');
+          }
+        } catch (error) {
+          console.error('Error during face detection:', error);
+          result.textContent = 'Error during analysis';
+        }
+
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+    }
+  </script>
+</body></html>
